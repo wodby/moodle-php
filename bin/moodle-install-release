@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+#
+# Puts a Moodle release together with the app repository in the current
+# directory, the root of the app's code:
+#
+#   - downloads the release named in .moodle-version (or the first argument)
+#     from Moodle's GitHub tag, with the Composer packages a tag lacks;
+#   - adds the repository's public/ directory, which holds its plugins at their
+#     place in Moodle's public/ tree, such as public/local/myplugin. A file that
+#     is already part of Moodle is refused, so Moodle's own code is never
+#     replaced;
+#   - adds Wodby's config.php, which reads its settings from the environment.
+#
+# The result replaces the directory's contents, except .git, .wodby,
+# .moodle-version and .dockerignore. Wodby CI runs it before building the
+# images, so the PHP and Nginx images get the same code.
+
+set -euo pipefail
+
+if [[ -n "${DEBUG:-}" ]]; then
+    set -x
+fi
+
+app_root="${PWD}"
+
+version="${1:-}"
+if [[ -z "${version}" ]]; then
+    if [[ ! -f .moodle-version ]]; then
+        echo >&2 "Add .moodle-version to the repository, naming the Moodle release to run, such as 5.3.1"
+        exit 1
+    fi
+    version="$(tr -d ' \t\r\n' < .moodle-version)"
+fi
+
+# Moodle 5.1 moved the web root to public/, which Wodby's Nginx setup serves.
+if [[ ! "${version}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    echo >&2 "Moodle release ${version} is not a version like 5.3.1"
+    exit 1
+fi
+major="${BASH_REMATCH[1]}"
+minor="${BASH_REMATCH[2]}"
+if [[ " ${MOODLE_MAJOR_VERSIONS} " != *" ${major} "* ]] || (( major == 5 && minor < 1 )); then
+    echo >&2 "Moodle ${version} is not supported: use Moodle 5.1 or later in the ${MOODLE_MAJOR_VERSIONS// /, } line"
+    exit 1
+fi
+
+if [[ -f lib/setup.php ]]; then
+    echo >&2 "${app_root} already contains Moodle's code: keep only your plugins under public/ in the repository"
+    exit 1
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT
+moodle="${tmp}/moodle"
+mkdir -p "${moodle}"
+
+echo "Downloading Moodle ${version}"
+# Downloaded to a file first, so a failed attempt can be retried from the start.
+if ! curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "${tmp}/moodle.tar.gz" \
+        "https://github.com/moodle/moodle/archive/refs/tags/v${version}.tar.gz"; then
+    echo >&2 "Could not download Moodle ${version}: check that the release exists"
+    exit 1
+fi
+tar -xzf "${tmp}/moodle.tar.gz" --strip-components=1 -C "${moodle}"
+rm "${tmp}/moodle.tar.gz"
+composer install -d "${moodle}" -n --no-ansi --no-dev --classmap-authoritative
+rm -rf "${moodle}/.github" "${moodle}/.grunt" "${moodle}/.esbuild"
+composer clear-cache -q || true
+
+plugins=()
+if [[ -d public ]]; then
+    conflicts=()
+    while IFS= read -r -d '' file; do
+        file="${file#./}"
+        if [[ -e "${moodle}/public/${file}" || -L "${moodle}/public/${file}" ]]; then
+            conflicts+=("public/${file}")
+        fi
+    done < <(cd public && find . \( -type f -o -type l \) ! -name .gitkeep -print0)
+    if (( ${#conflicts[@]} > 0 )); then
+        echo >&2 "These files are part of Moodle ${version}, so the repository can't replace them:"
+        printf >&2 '  %s\n' "${conflicts[@]}"
+        echo >&2 "Keep only your own plugins under public/, each in a directory of its own."
+        exit 1
+    fi
+    while IFS= read -r -d '' file; do
+        plugins+=("$(dirname "${file#./}")")
+    done < <(cd public && find . -name version.php -print0)
+    # Placeholders that keep empty directories in Git are left out.
+    (cd public && find . \( -type f -o -type l \) ! -name .gitkeep -print0 | tar --null -T - -cf -) \
+        | tar -xf - -C "${moodle}/public"
+fi
+
+cp /usr/local/share/moodle/config.php "${moodle}/config.php"
+
+# Everything else in the repository is replaced by Moodle's code.
+find "${app_root}" -mindepth 1 -maxdepth 1 \
+    ! -name .git ! -name .wodby ! -name .moodle-version ! -name .dockerignore \
+    -exec rm -rf {} +
+cp -a "${moodle}/." "${app_root}/"
+
+echo "Moodle ${version} is ready in ${app_root}"
+if (( ${#plugins[@]} > 0 )); then
+    printf 'Plugins from the repository: %s\n' "$(printf '%s\n' "${plugins[@]}" | sort | paste -sd ' ' -)"
+else
+    echo "Plugins from the repository: none"
+fi
