@@ -55,11 +55,14 @@ moodle="${tmp}/moodle"
 mkdir -p "${moodle}"
 
 echo "Downloading Moodle ${version}"
-if ! curl -fsSL --retry 5 "https://github.com/moodle/moodle/archive/refs/tags/v${version}.tar.gz" \
-        | tar -xz --strip-components=1 -C "${moodle}"; then
+# Downloaded to a file first, so a failed attempt can be retried from the start.
+if ! curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "${tmp}/moodle.tar.gz" \
+        "https://github.com/moodle/moodle/archive/refs/tags/v${version}.tar.gz"; then
     echo >&2 "Could not download Moodle ${version}: check that the release exists"
     exit 1
 fi
+tar -xzf "${tmp}/moodle.tar.gz" --strip-components=1 -C "${moodle}"
+rm "${tmp}/moodle.tar.gz"
 composer install -d "${moodle}" -n --no-ansi --no-dev --classmap-authoritative
 rm -rf "${moodle}/.github" "${moodle}/.grunt" "${moodle}/.esbuild"
 composer clear-cache -q || true
