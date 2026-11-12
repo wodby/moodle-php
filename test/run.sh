@@ -112,6 +112,7 @@ prepare_next() {
         mv "${work}/$1/public/local/wodbyextra/lang/en/local_wodbyhello.php" "${work}/$1/public/local/wodbyextra/lang/en/local_wodbyextra.php"
         rm -f "${work}/$1/public/local/wodbyextra/version.php.bak" "${work}/$1/public/local/wodbyextra/index.php"
     fi
+    chmod -R a+rwX "${work}/$1"
 }
 
 echo "Upgrading the plugin and adding another"
