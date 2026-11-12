@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# Installs Moodle into an empty database on the first deployment and upgrades
+# it on later ones, so Moodle's web installer is never used. The administrator
+# comes from MOODLE_ADMIN_USERNAME, MOODLE_ADMIN_PASSWORD and MOODLE_ADMIN_EMAIL.
+
+set -euo pipefail
+
+if [[ -n "${DEBUG:-}" ]]; then
+    set -x
+fi
+
+cd /var/www/html
+
+# An installed site is upgraded when the deployed code is newer.
+if php admin/cli/cfg.php --name=version >/dev/null 2>&1; then
+    exec php admin/cli/upgrade.php --non-interactive
+fi
+
+if [[ -z "${MOODLE_ADMIN_PASSWORD:-}" ]]; then
+    echo >&2 "Moodle is not installed, or its database can't be read. To install it, set the admin password and deploy again."
+    exit 1
+fi
+
+# install_database.php stops when Moodle's tables exist, so a database that
+# couldn't be read above is never installed over. It takes the password only as
+# an argument, so it gets a throwaway one; the real password is set from the
+# environment next and never appears in a process list.
+php admin/cli/install_database.php --agree-license \
+    --adminuser="${MOODLE_ADMIN_USERNAME:-admin}" \
+    --adminpass="$(head -c 32 /dev/urandom | base64)" \
+    --adminemail="${MOODLE_ADMIN_EMAIL:-}" \
+    --fullname="${MOODLE_SITE_FULLNAME:-Moodle}" \
+    --shortname="${MOODLE_SITE_SHORTNAME:-moodle}"
+
+# A password that doesn't meet Moodle's password policy must be changed at the
+# first sign-in.
+php -r '
+    define("CLI_SCRIPT", true);
+    require "config.php";
+    $admin = get_admin();
+    $password = getenv("MOODLE_ADMIN_PASSWORD");
+    update_internal_user_password($admin, $password);
+    $error = "";
+    if (!check_password_policy($password, $error, $admin)) {
+        set_user_preference("auth_forcepasswordchange", 1, $admin);
+        echo "The admin password does not meet the password policy; Moodle will ask for a new one at the first sign-in.\n";
+    }
+'

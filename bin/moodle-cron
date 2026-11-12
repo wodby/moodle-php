@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#
+# Keeps Moodle's cron running, as Moodle needs it every minute: each run polls
+# for new tasks for 15 minutes, Moodle's longest keep-alive, and the next one
+# follows.
+
+set -u
+
+cd /var/www/html
+
+pid=""
+
+# Moodle's cron stops after its current task on SIGTERM. The image's stop
+# signal is SIGQUIT, for PHP-FPM, so a stop is passed on to cron as SIGTERM.
+stop() {
+    if [[ -n "${pid}" ]]; then
+        kill -TERM "${pid}" 2>/dev/null || true
+        wait "${pid}" || true
+    fi
+    exit 0
+}
+trap stop TERM INT QUIT
+
+while true; do
+    php admin/cli/cron.php --keep-alive=900 &
+    pid=$!
+    # Cron fails until Moodle is installed; it is tried again a minute later.
+    if ! wait "${pid}"; then
+        sleep 60 &
+        pid=$!
+        wait "${pid}" || true
+    fi
+done
