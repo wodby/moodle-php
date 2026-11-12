@@ -15,6 +15,8 @@ name="${NAME:-moodle-php-test}"
 net="${name}-net"
 db="${name}-db"
 work="$(mktemp -d)"
+# The container user writes builds here and replaces them.
+chmod 777 "${work}"
 
 cleanup() {
     docker rm -f "${db}" "${name}" >/dev/null 2>&1 || true
@@ -34,6 +36,12 @@ prepare() {
     cp -R app "${work}/$1"
     printf '%s\n' "${MOODLE_VER}" > "${work}/$1/.moodle-version"
     chmod -R a+rwX "${work}/$1"
+}
+
+# Replaces the app directory with another build. The container user owns the
+# files, so the container removes them.
+replace_app() {
+    docker run --rm -v "${work}:/work" --entrypoint sh "${IMAGE}" -c "rm -rf /work/app && mv /work/$1 /work/app"
 }
 
 install_release() {
@@ -109,7 +117,7 @@ prepare_next() {
 echo "Upgrading the plugin and adding another"
 prepare_next app2
 install_release app2 >/dev/null
-rm -rf "${work}/app"; mv "${work}/app2" "${work}/app"
+replace_app app2
 docker build -q -t "${name}:app" -f "${work}/Dockerfile" "${work}" >/dev/null
 moodle moodle-update > "${work}/update.log" 2>&1 || { tail -20 "${work}/update.log"; exit 1; }
 version="$(moodle php -r 'define("CLI_SCRIPT", true); require "config.php"; echo get_config("local_wodbyhello", "version");')"
@@ -121,7 +129,7 @@ ok "a plugin added to the repository is installed on the next deployment"
 echo "Removing an installed plugin from the repository"
 prepare_next app3 -
 install_release app3 >/dev/null
-rm -rf "${work}/app"; mv "${work}/app3" "${work}/app"
+replace_app app3
 docker build -q -t "${name}:app" -f "${work}/Dockerfile" "${work}" >/dev/null
 if moodle moodle-update > "${work}/update.log" 2>&1; then
     echo "INFO: the upgrade succeeds after a plugin was removed"
