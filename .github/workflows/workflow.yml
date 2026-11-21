@@ -13,7 +13,7 @@ on:
 
 env:
   # The revision of wodby/php the image is built on.
-  BASE_IMAGE_REVISION: r18
+  BASE_IMAGE_REVISION: r20
 
 jobs:
   moodle-php-8-4:
